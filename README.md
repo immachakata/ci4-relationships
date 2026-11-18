@@ -764,11 +764,51 @@ When a relation is bound to a parent—either automatically via `$entity->posts(
 - **`sum(string $column)`, `avg(string $column)`, `min(string $column)`, `max(string $column)`**  
   Runs SQL `SUM`, `AVG`, `MIN`, or `MAX` on `$column` scoped to the parent (respecting soft deletes). Returns `null` if no rows match (`avg()` returns `?float`, `sum()` returns `int|float|null`).
 - **`chunk(int $size, Closure $callback): void`**  
-  Iterates over large sets of related records in batches of `$size` to keep memory usage flat.
+  Processes matching related records in batches of `$size`, invoking the callback once per record (not once per batch). Return `false` from the callback to stop early.
+  ```php
+  // Process a user's posts 100 records at a time without loading them all at once.
+  $userModel->posts()->for($user)->chunk(100, function ($post) {
+      // Send a notification, export the row, etc.
+  });
+
+  // An Entity relation is already bound to its parent.
+  $user->posts()->chunk(100, function ($post) {
+      // Stop after finding the first post that needs attention.
+      if ($post->status === 'needs_review') {
+          return false;
+      }
+  });
+  ```
+  **Use case / Edge case:** Use `chunk()` for exports or maintenance jobs where loading every child into memory would be expensive. CodeIgniter's `Model::chunk()` raises a `DataException` when there are no matching rows, so check `exists()` first if an empty relation is expected.
 - **`update($data): bool`**  
   Mass-updates all related rows matching the relation (and any chained `where()` calls) scoped to the parent. Accepts an array or object.
+  ```php
+  // Update just the loaded post, while still ensuring it belongs to this user.
+  $user = $userModel->with('posts')->find($userId);
+  $post = $user['posts'][0];
+  $userModel->posts()->for($user)
+      ->where('id', $post['id'])
+      ->update(['status' => 'archived']);
+
+  // Or update every draft post belonging to this Entity's user.
+  $user->posts()->where('status', 'draft')->update(['status' => 'review']);
+  ```
+  **Use case / Edge case:** Add a child ID condition when only one loaded record should change. Without it, `update()` changes every child matching the relation and additional filters. The parent relation constraint prevents updating a record belonging to another parent.
 - **`delete($id = null, bool $purge = false): bool`**  
   Deletes related records scoped to the parent (soft-deleting automatically if the related model uses `$useSoftDeletes = true`, unless `$purge = true`).
+  ```php
+  // Array/stdClass model: load the parent with its posts, then delete one post
+  // through the parent-scoped relation.
+  $user = $userModel->with('posts')->find($userId);
+  $post = $user['posts'][0];
+  $userModel->posts()->for($user)->delete($post['id']);
+
+  // Entity model using EntityRelationshipsTrait: the relation is bound to $user.
+  $user = $userModel->with('posts')->find($userId);
+  $post = $user->posts[0];
+  $user->posts()->delete($post->id);
+  ```
+  **Use case / Edge case:** `with('posts')` only loads the posts; it does not make the loaded array/entity itself a delete operation. Deleting through the relation scopes the request to that user, so a post ID belonging to another user will not be deleted. With soft deletes enabled, this is a soft delete; pass `true` as the second argument (`delete($postId, true)`) to permanently delete it.
 
 ---
 
